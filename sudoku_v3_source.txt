@@ -1,0 +1,865 @@
+// Author: David Fong
+// Date: June 11th, 2018
+// Purpose:
+//
+// Terminology:
+// > Board: The [9x9] grid of individual cells.
+// > Block: One of 9 [3x3] chunks of the board.
+// > Group: Either a row, a column, or a block.
+//
+
+#define DEBON // Whether or not to build solution to execute debug statements.
+#ifdef DEBON
+#define DEBUG(fmt, ...) printf(fmt, __VA_ARGS__)
+#else
+#define DEBUG(mft, ...) 
+#endif
+
+#define BLOCK_W 3 // IMPORTANT.
+#define BOARD_W ( BLOCK_W * BLOCK_W )
+#define ADDTNL_SEED_CELLS ( BOARD_W + 1 )
+#define PERSISTENCE 9
+#define MIN_CLUES ( BOARD_W * BLOCK_W )
+#define PRINT_CHAR_VAL(c) printf(#c " = <%c>\n", c)
+
+#define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
+#include <stdlib.h>
+#include <conio.h>
+#include <time.h>
+#include <string.h>
+
+#define SECS_PER_MIN 60
+#define TRUE 1
+#define FALSE 0
+#define YES 'y'
+#define NO 'n'
+#define PTR_LOC_CELL (board[loc->row][loc->col])
+
+struct cell {
+	short puzzle;
+	short answer;
+	bool given_f;
+};
+const cell default_cell{ BOARD_W + 1, BOARD_W + 1, FALSE };
+
+#define MODERATE 2
+#define INSANE 4
+struct rule {
+	short dfclt;
+	short rvls;
+	short atmps;
+};
+const rule empty_stats{ NULL, 0, 0 }, \
+rock_IQ{ NULL, (BOARD_W * BOARD_W), (BOARD_W * BOARD_W) }, \
+easy{ NULL, BOARD_W, BOARD_W }, \
+moderate{ NULL, BLOCK_W, BLOCK_W }, \
+hard{ NULL, 1, 1 }, \
+insane{ NULL, 0, 1 };
+const rule dfcltArr[INSANE + 1] = { rock_IQ, easy, moderate, hard, insane };
+
+struct coord {
+	short row;
+	short col;
+};
+
+// User option functions.
+bool getYesOrNo(void);
+void get_dfclty(rule *stats);
+void mSaveBoard(cell board[][BOARD_W], short *start, bool isWrite_f);
+bool fSaveBoard(cell board[][BOARD_W], rule *stats, bool isWrite_f);
+
+// Game functions.
+void createSoln(cell board[][BOARD_W], rule *stats);
+void makePuzzle(cell board[][BOARD_W], rule *stats);
+bool playSudoku(cell board[][BOARD_W], rule *stats);
+bool checkSbmsn(cell board[][BOARD_W], rule *stats);
+
+// Board functions.
+enum clear_mode { clear_all, clear_nonGivens };
+void clearBoard(cell board[][BOARD_W], clear_mode mode);
+void seedABlock(cell board[][BOARD_W], short b_row, short b_col);
+void seedNCells(cell board[][BOARD_W], short nCells);
+enum print_mode { print_debug, print_answer, print_user };
+void printBoard(cell board[][BOARD_W], print_mode mode, FILE* stream);
+
+// Solving Functions.
+bool toNextCand(cell board[][BOARD_W], const coord *loc);
+bool isPossCand(cell board[][BOARD_W], const coord *loc, short testNo);
+bool toPrevCell(cell board[][BOARD_W], coord *loc);
+bool toNextCell(cell board[][BOARD_W], coord *loc);
+bool solveBoard(cell board[][BOARD_W], bool continuedSolve);
+
+// Scoring functions.
+enum search_mode { search_row, search_col, search_block };
+short searchGroup(cell board[][BOARD_W], short target, short gLoc, search_mode mode);
+
+//========================================
+// THE MAIN FUNCTION.
+//========================================
+int main(void) {
+	cell board[BOARD_W][BOARD_W];
+	rule stats;
+	bool choice = TRUE;
+	// play_mode difficulty = play_easy;
+
+	printf("============================================\n");
+	printf("Welcome to sudoku in C! Let's get started :)\n");
+	printf("============================================\n");
+
+	do { // Loop to prepare and play one game.
+		clearBoard(board, clear_all);
+		stats = empty_stats;
+
+		// Here ask user if they want to play puzzle from file using getYesOrNo().
+		printf("\nWould you like to open a previously saved puzzle for play?\n");
+		printf("*Otherwise, a process will begin to generate a new puzzle.");
+		choice = getYesOrNo();
+		if (choice && fSaveBoard(board, &stats, FALSE)) {
+			// ^order matters: If user wanted to generate puzzle, then skips funtion call.
+		} // Code block to read a puzzle from a designated file.
+		else {
+			createSoln(board, &stats);
+		} // Function to generate a proper puzzle from scratch.
+		printBoard(board, print_debug, stdout);
+
+		playSudoku(board, &stats);
+
+		printf("\nWould you like to start a new game?");
+		choice = getYesOrNo();
+	} while (choice);
+
+	printf("\nAll done! Press the <g> key twice to close the program.\n");
+	_getche(); // Not done yet.
+	_getche();
+	return 0;
+}
+
+//========================================
+// USER OPTION FUNCTIONS.
+//========================================
+
+// Return TRUE if user pressed the <YES> key and FALSE if they pressed the <NO> key.
+bool getYesOrNo(void) {
+	char choice = YES;
+	printf(" (%c/%c)\n", YES, NO);
+	do {
+		choice = _getch();
+		if (choice == YES) {
+			return TRUE;
+		}
+		else if (choice == NO) {
+			return FALSE;
+		}
+	} while (TRUE);
+}
+
+//
+void get_dfclty(rule *stats) {
+#define NAME_STR(v) #v
+	char dChoice_c;
+	short index = 0;
+	const rule *d = (rule *)NULL;
+
+	printf("\nPlease enter your choice of difficulty. (0 - %d)\n", INSANE + 1);
+	printf("Harder difficulties give fewer givens, allow fewer answer reveals,\n");
+	printf("and allow fewer attempted answer submissions.\n");
+	printf("Difficulty choice: ");
+	do {
+		dChoice_c = _getch();
+	} while (dChoice_c < '0' || dChoice_c >('0' + INSANE));
+	printf("%c\n", dChoice_c); // echo valid difficulty.
+	stats->dfclt = (short int)(dChoice_c - '0');
+	if (stats->dfclt == 0) {
+		printf("\n*Telepathically whispers with expressionless\ndisdain into your ear \"~weeeaaaaaakkkk~\")\n");
+	} // Diss the weaklings. ( jk <3 );
+}
+
+// *start points to allocated memory with similar behaviour to linearized board[][].
+void mSaveBoard(cell board[][BOARD_W], short *start, bool isWrite_f) {
+	short row = 0, col = 0;
+	int linear_loc = 0;
+
+	for (row = 0; row < BOARD_W; row++) {
+		for (col = 0; col < BOARD_W; col++) {
+			if (isWrite_f == TRUE) {
+				*(start + linear_loc) = board[row][col].puzzle;
+			}
+			else {
+				board[row][col].puzzle = board[row][col].answer = *(start + linear_loc);
+				board[row][col].given_f = TRUE;
+			}
+			linear_loc++;
+		} // Go through the current row.
+	} // Go through all rows.
+}
+
+// Return: Whether file operations were completed sucessfully.
+bool fSaveBoard(cell board[][BOARD_W], rule *stats, bool isWrite_f) {
+#define PUZZLE_HEADER "sdkPzl"
+	short row = 0, col = 0;
+	FILE* saveFile = NULL;
+	int given_flag = TRUE;
+	int puzzleNum = 0;
+	char puzzleName[25] = PUZZLE_HEADER;
+	bool choice = TRUE;
+
+	do { // Loop to try opening a file.
+		if (isWrite_f == TRUE) {
+			printf("Enter the number of this puzzle that you wish to save it as.\n");
+			printf("*Note: Using the same number as that in an existing file will overwrite that file.\n");
+			scanf("%3d", &puzzleNum);
+			sprintf(puzzleName, "%s/width_%d/dfclty_%hd/num_%03d", PUZZLE_HEADER, BLOCK_W, stats->dfclt, puzzleNum);
+			saveFile = fopen(puzzleName, "w");
+		} // Writing a puzzle to a file.
+		else {
+			get_dfclty(stats);
+			printf("Enter the number of this puzzle that you wish to save it as.\n");
+			scanf("%3d", &puzzleNum);
+			sprintf(puzzleName, "%s/width_%d/dfclty_%hd/num_%03d", PUZZLE_HEADER, BLOCK_W, stats->dfclt, puzzleNum);
+			saveFile = fopen(puzzleName, "r");
+		} // Recalling a puzzle from a file.
+
+		if (saveFile != (FILE *)NULL) {
+			for (row = 0; row < BOARD_W; row++) {
+				for (col = 0; col < BOARD_W; col++) {
+					if (isWrite_f == TRUE) {
+						given_flag = board[row][col].given_f;
+						fprintf(saveFile, "%hx %d\t", board[row][col].answer, given_flag);
+					}
+					else {
+						fscanf(saveFile, "%hx%d", &board[row][col].answer, &given_flag);
+						board[row][col].given_f = (bool)given_flag;
+						if (board[row][col].given_f == TRUE) {
+							board[row][col].puzzle = board[row][col].answer;
+						}
+					}
+				}
+				if (isWrite_f == TRUE) {
+					fprintf(saveFile, "\n");
+				} // Go through the current row.
+			} // Go through all rows.
+			printf("File operations succeeded.\n");
+			fclose(saveFile);
+			return TRUE;
+		} // Case: File was opened successfully.
+		else {
+			printf("Attempt to open the file \"%s\" failed.\n", puzzleName);
+			printf("Would you like to try opening a file again?\nOtherwise a new puzzle will be generated");
+			choice = getYesOrNo();
+		} // Failed to open file. Ask if user wants to try again.
+	} while (choice);
+	return FALSE;
+}
+
+//========================================
+// GAME FUNCTIONS.
+//========================================
+
+// called if user chose not to open a puzzle from a file.
+void createSoln(cell board[][BOARD_W], rule *stats) {
+#define SOLN_BUFFER 25
+	clock_t start = clock(), end = clock();
+	double timeElapsed = 0.0;
+
+	short solnsFound = 0, playSoln = 0;
+	short *solnArr[SOLN_BUFFER] = { (short *)NULL };
+
+	short fill_coord = 0;
+	bool choice = TRUE;
+
+makeSolnsAgain: srand((unsigned)time(NULL));
+	solnsFound = 0;
+	for (fill_coord = 0; fill_coord < BLOCK_W; fill_coord++) {
+		seedABlock(board, fill_coord * BLOCK_W, fill_coord * BLOCK_W);
+	} // Seeds <BLOCK_W> number of independant blocks with valid entries.
+	seedNCells(board, ADDTNL_SEED_CELLS);
+	// ^Otherwise there could be more than 2500 possible solutions.
+	printBoard(board, print_debug, stdout);
+
+	printf("\nPress any key to begin solving for all possible solutions.\n");
+	_getch();
+	do { // Loop to find multiple solutions.
+		start = clock();
+		if (solveBoard(board, (bool)solnsFound) && solnsFound < SOLN_BUFFER) {
+			end = clock();
+			timeElapsed = (double)(end - start) / CLOCKS_PER_SEC;
+			printf("\nTime elapsed: %.3lf seconds.\n", timeElapsed);
+			printf("A solution (#%d) was found:\n", solnsFound + 1);
+			printBoard(board, print_debug, stdout);
+
+			solnArr[solnsFound] = (short *)calloc(BOARD_W * BOARD_W, sizeof(short int));
+			// ^Allocate memory for this new solution.
+			if (solnArr[solnsFound] != NULL) {
+				// Write board to memory
+				mSaveBoard(board, solnArr[solnsFound], TRUE);
+				solnsFound++;
+			} // Memory was successfully allocated for the found solution.
+
+			else {
+				printf("Memory couldn't be allocated for the solution just found.\n");
+				printf("Therefore, that solution will not be available for play.\n");
+			} // Memory allocation failed.
+
+			if (solnsFound != SOLN_BUFFER) {
+				printf("\nWould you like to look for another?");
+				choice = getYesOrNo();
+			}
+		} // A solution was found.
+		else if (solnsFound < SOLN_BUFFER) {
+			printf("\nCouldn't find a solution.\n");
+			break;
+		} // Couldn't find any new solutions (ie. all possible solutions found).
+	} while (choice);
+
+	if (solnsFound == 0) {
+		printf("Since no solutions found were successfully saved,\n");
+		printf("the solution generating process will start again.\n");
+		goto makeSolnsAgain;
+	} // No solutions were successfully saved.
+	else {
+		printf("\n======================================================\n");
+		printf("Total number of solutions found: %d solutions.\n", solnsFound);
+		playSoln = rand() % solnsFound;
+		printf("Saved solution chosen randomly for play: solution #%02d.\n", (playSoln + 1));
+		printf("======================================================\n");
+		clearBoard(board, clear_all);
+		// Restore this chosen solution for play from memory to the board.
+		mSaveBoard(board, solnArr[playSoln], FALSE);
+	} // At least one solution was successfully saved.
+
+	for (playSoln = 0; playSoln < solnsFound; playSoln++) {
+		free(solnArr[playSoln]);
+	} // Free previously allocated memory.
+	printBoard(board, print_debug, stdout);
+
+	// Get the user's choice of difficulty.
+	get_dfclty(stats);
+
+	// Decrementally prepare the puzzle (ie. choose clues to give).
+	makePuzzle(board, stats);
+}
+
+// called only at the end of createSoln().
+void makePuzzle(cell board[][BOARD_W], rule *stats) {
+#define RAD_CNTRPRT(x, y) (board[BOARD_W - 1 - x][BOARD_W - 1 - y])
+	short row = 0, col = 0;
+	short solnsFound = 0, attempts = 0, numClues = BOARD_W * BOARD_W;
+	bool choice = FALSE;
+
+	do { // Loop to try hiding two givens and testing solv(e?)ability.
+#ifdef DEBON
+		printf("Debugging. Press any key to continue hiding givens.\n");
+		_getch();
+#endif
+		do { // Find two radially symmetrical cells that are both givens.
+			row = rand() % BOARD_W;
+			col = rand() % BOARD_W;
+		} while (board[row][col].given_f != TRUE);
+		// ^Note: Don't need to test radially symmertic counterpart since all cells are initially givens.
+		board[row][col].puzzle = RAD_CNTRPRT(row, col).puzzle = default_cell.puzzle;
+		board[row][col].given_f = RAD_CNTRPRT(row, col).given_f = FALSE;
+		// 'Hide' both those answers.
+
+		solnsFound = 0;
+		while (solveBoard(board, (bool)solnsFound) && solnsFound <= 1) {
+			solnsFound++;
+		}
+		if (solnsFound > 1) {
+			// Undo this action and increment attempts.
+			board[row][col].puzzle = board[row][col].answer;
+			RAD_CNTRPRT(row, col).puzzle = RAD_CNTRPRT(row, col).answer;
+			board[row][col].given_f = RAD_CNTRPRT(row, col).given_f = TRUE;
+			attempts++;
+			DEBUG("\nAttempt to hide symmetric pair failed (Attempt #%d).\n", attempts);
+			if (attempts > PERSISTENCE) {
+				clearBoard(board, clear_nonGivens);
+				printBoard(board, print_debug, stdout);
+				break;
+			} // Otherwise will never stop trying until <MIN_CLUES> or fewer clues remain.
+		} //  More than one solution existed after this attempt at hiding two cells.
+		else {
+			// Reset attempts and solving work for next hide.
+			attempts = 0;
+			clearBoard(board, clear_nonGivens);
+			printBoard(board, print_debug, stdout);
+
+			if (BOARD_W % 2 == 1 && row == (BOARD_W - 1) / 2 && col == (BOARD_W - 1) / 2) {
+				numClues -= 1;
+			} // Case where the center cell (if it exists) was successfully hidden.
+			else {
+				numClues -= 2;
+			} // Default case.
+
+			DEBUG("Number of displayed givens remaining: %d.\n", numClues);
+			if (numClues <= (BOARD_W + INSANE - stats->dfclt) * BLOCK_W) {
+				break;
+			} // Otherwise will be a very difficult puzzle.
+		} // Solution after hiding is still proper.
+	} while (TRUE); // See break statements in each logical statement.
+
+	printf("\n====================================================\n");
+	printf("Done hiding answers. Number of givens remaining: %03d\n", numClues);
+	printf("====================================================\n");
+
+	printf("\nWould you like to save this puzzle to a file for future play?");
+	choice = getYesOrNo();
+	if (choice) {
+		fSaveBoard(board, stats, TRUE);
+	} // Save puzzle to file. Overwrites previous puzzle.
+}
+
+// Return TRUE if the user solved the puzzle correctly.
+bool playSudoku(cell board[][BOARD_W], rule *stats) {
+#define UP 'w'
+#define LEFT 'a'
+#define DOWN 's'
+#define RIGHT 'd'
+	const char quit = 'Q', help = 'h', reveal = 'R', guess = ' ', unGuess = '\b', submit = 'S';
+	short row = 0, col = 0;
+	clock_t start = clock(), end = clock();
+	double elapsed = 0.0;
+	int minutes = 0;
+	char command;
+	bool choice = FALSE, hasWon_f = FALSE /* This initialization important. */;
+
+	printf("\n==========================================================\n");
+	printf("BEGIN! *Press \'h\' at any time for a help menu of controls.\n");
+	printf("==========================================================\n");
+	printBoard(board, print_user, stdout);
+	printf("(%x, %x) ", row, col);
+	start = clock();
+
+	do { // Loop to respond to a command (one "turn" passes).
+		command = _getch();
+		if (command == quit) {
+			printf("Are you sure you would like to quit this game?");
+			choice = getYesOrNo();
+			if (choice)
+				break;
+			else
+				printf("Game continues...\n");
+		} // Case: quit.
+		else if (command == help) {
+			PRINT_CHAR_VAL(quit);
+			PRINT_CHAR_VAL(help);
+			PRINT_CHAR_VAL(reveal);
+			printf("Press <SPACEBAR> to begin entering a guess.\nPress <BACKSPACE> to clear a guess.");
+			printf("Move selected coordinate with %c%c%c%c.\n", UP, LEFT, DOWN, RIGHT);
+			PRINT_CHAR_VAL(submit);
+		} // Case: help.
+		else if (command == reveal) {
+			if (board[row][col].given_f == TRUE || \
+				board[row][col].puzzle != default_cell.puzzle) {
+				printf("You can only use a reveal on an empty cell.\n");
+			} // User tried to reveal a cell containing a given or a guess.
+			else if (stats->rvls >= dfcltArr[stats->dfclt].rvls) {
+				printf("You have run out of the number of reveals allowed by your chosen difficulty.\n");
+			} // User cannot use more reveals than allowed by the current difficulty.
+			else {
+				board[row][col].puzzle = board[row][col].answer;
+				board[row][col].given_f = TRUE;
+				stats->rvls++;
+				printf("\nUsed reveal (%d/%d)\n", stats->rvls, dfcltArr[stats->dfclt].rvls);
+				printBoard(board, print_user, stdout);
+				printf("(%x, %x) ", row, col);
+			} // Cell.puzzle was empty. Reveal it and make it a given.
+		} // Case: reveal.
+		else if (command == guess) {
+			if (board[row][col].given_f == TRUE) {
+				printf("This cell contains a given! You can't overwrite it.\n");
+			}
+			else {
+				printf("Enter a hexadecimal number from 0 to %x: ", (BOARD_W - 1));
+				do {
+					command = _getch();
+					if (command >= '0' && command <= '9')
+						command -= '0';
+					else if (command >= 'a' && command <= 'f')
+						command -= 'a';
+					else if (command >= 'A' && command <= 'F')
+						command -= 'F';
+					else
+						command = -1;
+				} while (command < 0 || command >(BOARD_W - 1));
+				printf("\n");
+				board[row][col].puzzle = (short int)command;
+				printBoard(board, print_user, stdout);
+				printf("(%x, %x) ", row, col);
+			} // Get an entry and put it in .puzzle of board at loc.
+		} // Case: guess.
+		else if (command == unGuess) {
+			if (board[row][col].given_f == TRUE)
+				printf("You cannot erase a given cell.\n");
+			else if (board[row][col].puzzle == default_cell.puzzle)
+				printf("This cell already contains no guess.\n");
+			else {
+				board[row][col].puzzle = default_cell.puzzle;
+				printBoard(board, print_user, stdout);
+				printf("(%x, %x) ", row, col);
+			}
+		} // Case: unGuess.
+		else if (command == submit) {
+			if (checkSbmsn(board, stats)) {
+				hasWon_f = TRUE;
+				break;
+			} // User won. Go to ending sequence.
+			else if (stats->atmps >= dfcltArr[stats->dfclt].atmps) {
+				break; // Case: user lost. Go to ending sequence.
+			} // Check if user used all their attempts.
+		}
+		else {
+			switch (command) {
+			case UP:
+				if (row > 0)
+					row--;
+				break;
+			case LEFT:
+				if (col > 0)
+					col--;
+				break;
+			case DOWN:
+				if (row < BOARD_W - 1)
+					row++;
+				break;
+			case RIGHT:
+				if (col < BOARD_W - 1)
+					col++;
+				break;
+			}
+			printf("\b\b\b\b\b\b\b(%x, %x) ", row, col);
+		} // Case: test for direction command.
+	} while (TRUE);
+
+	printf("\n=========================================\n");
+	printf("The game has ended! (Answer below)\n");
+	printBoard(board, print_answer, stdout);
+	end = clock();
+	elapsed = (double)(end - start) / CLOCKS_PER_SEC;
+	minutes = (int)(elapsed / SECS_PER_MIN);
+	printf("\nTime elapsed: %02d minutes and %.2lf seconds.\n", minutes, (elapsed - minutes * SECS_PER_MIN));
+	printf("=========================================\n");
+	return hasWon_f;
+}
+
+// Return: True if all .puzzle members of board[][] match their corresponding .answer member.
+//         (ie. User won the game)
+bool checkSbmsn(cell board[][BOARD_W], rule *stats) {
+	short row = 0, col = 0, index = 0;
+	short numMistakes = 0;
+	coord *mistakeLoc[BOARD_W * (2 * BLOCK_W)] = { (coord *)NULL };
+
+	for (row = 0; row < BOARD_W; row++) {
+		for (col = 0; col < BOARD_W; col++) {
+			if (board[row][col].puzzle == default_cell.puzzle) {
+				printf("You haven't even completed the puzzle yet D: Keep at it!\n");
+				printf("Note: This is not counted against your submission attempts record.\n");
+				return FALSE;
+			} // User isn't done puzzle yet.
+			else if (board[row][col].puzzle != board[row][col].answer) {
+				if (stats->dfclt < MODERATE) {
+					mistakeLoc[numMistakes] = (coord *)calloc(1, sizeof(struct coord));
+					mistakeLoc[numMistakes]->row = row;
+					mistakeLoc[numMistakes]->col = col;
+				} // Store the coordinates of a mistake for an easy mode (or lower) player.
+				numMistakes++;
+			} // Mistakes were made.
+		}
+	}
+	if (numMistakes > 0) {
+		if (stats->dfclt >= MODERATE) {
+			printf("You already made at least one mistake.\n");
+			stats->atmps++;
+			return FALSE;
+		} // Don't tell difficulties greater than moderate how many mistakes they made.
+
+		printf("You made a total of %d mistakes.\n", numMistakes);
+		if (stats->dfclt < MODERATE) {
+			printf("You should check the following coordinates:\n");
+			for (index = 0; index < numMistakes; index++) {
+				printf("(%x, %x)", mistakeLoc[index]->row, mistakeLoc[index]->col);
+				free(mistakeLoc[index]);
+			} // Print coordinates of mistakes and then free their consumed memory.
+		} // Tell easy mode (or lower) player where mistakes are.
+		stats->atmps++;
+		return FALSE;
+	} // Case: Didn't win.
+	return TRUE;
+}
+
+//========================================
+// BOARD FUNCTIONS.
+//========================================
+
+// called before each call to playSudoku() and after each cycle of makePuzzle().
+void clearBoard(cell board[][BOARD_W], clear_mode mode) {
+	short row = 0, col = 0;
+
+	for (row = 0; row < BOARD_W; row++) {
+		for (col = 0; col < BOARD_W; col++) {
+			if (mode == clear_all) {
+				board[row][col] = default_cell;
+			} // assign default values according to rules of mode.
+			if (mode == clear_nonGivens && board[row][col].given_f != TRUE) {
+				board[row][col].puzzle = default_cell.puzzle;
+				board[row][col].given_f = default_cell.given_f;
+			} // Don't clear the .answer member.
+		}
+	} // Initialize/clear all the data in the board.
+}
+
+// called only at the start of createSoln().
+void seedABlock(cell board[][BOARD_W], short b_row, short b_col) {
+	long int markup = 0; // a flag field is TRUE if that entry has already been placed in this block.
+	short row = 0, col = 0, entry = 0;
+
+	for (row = 0; row < BLOCK_W; row++) {
+		for (col = 0; col < BLOCK_W; col++) {
+			do { // Find another entry not yet placed in this block.
+				entry = rand() % BOARD_W;
+			} while ((markup >> entry) & 1);
+			markup |= (1 << entry);
+			board[b_row + row][b_col + col].puzzle = entry;
+			board[b_row + row][b_col + col].given_f = TRUE;
+		}
+	}
+}
+
+// called only at the start of createSoln() after calling seedABlock().
+void seedNCells(cell board[][BOARD_W], short nCells) {
+	short count = 0, attempts = 0, cand = 0;
+	short candArr[BOARD_W] = { 0 }, index = 0;
+	coord loc = { 0, 0 };
+	bool becameImpossible = FALSE;
+
+	printf("Cells seeded: ");
+	while (count < nCells && attempts < PERSISTENCE) {
+		do { // get a random coordinate that does not already contain a given.
+			loc.row = rand() % BOARD_W;
+			loc.col = rand() % BOARD_W;
+		} while (board[loc.row][loc.col].given_f == TRUE);
+		index = 0;
+		for (cand = 0; cand < BOARD_W; cand++) {
+			if (isPossCand(board, &loc, cand)) {
+				candArr[index] = cand;
+				index++;
+			}
+		} // Record which entries are candidates.
+		board[loc.row][loc.col].puzzle = candArr[rand() % index];
+		board[loc.row][loc.col].given_f = TRUE;
+		if (solveBoard(board, FALSE) == FALSE) {
+			candArr[--index] = 0;
+			board[loc.row][loc.col] = default_cell;
+			attempts++;
+			//printf("(fail #%d) ", attempts);
+		} // Board became impossible to solve. Undo seeded cell.
+		else {
+			attempts = 0;
+			count++;
+		} // Board still solvable. Move on.
+		clearBoard(board, clear_nonGivens);
+		if (attempts == 0) {
+			printf("%d ", count);
+		} // Print status message.
+	} // Loop to seed an additional cell to reduce possible number of solutions.
+	if (attempts == PERSISTENCE) {
+		printf("\nGave up on seeding more cells to save time.\n");
+	}
+}
+
+//* user mode only prints values of non-givens in the .answer member.
+//* answer mode does not have this rule.
+//* debug is like answer but only executes if <DEBON> is defined
+void printBoard(cell board[][BOARD_W], print_mode mode, FILE* stream) {
+#define BORDER " ."
+	short row = 0, col = 0;
+#ifdef DEBON
+#else // supress print if mode is print_debug and DEBON isn't defined.
+	if (mode == print_debug)
+		return;
+#endif
+
+	fprintf(stream, "\n");
+	if (mode == print_user) {
+		fprintf(stream, "  ");
+		for (col = 0; col < BOARD_W; col++) {
+			if (!(col % BLOCK_W))
+				fprintf(stream, "  ");
+			fprintf(stream, "%2hx", col);
+		}
+		fprintf(stream, "\n");
+	} // Print column coordinate ruler.
+
+	for (row = 0; row < BOARD_W; row++) {
+		if (mode == print_user) {
+			if (!(row % BLOCK_W)) {
+				fprintf(stream, "  "); // Instead of row coordinate.
+				for (col = 0; col <= BOARD_W + BLOCK_W; col++)
+					fprintf(stream, BORDER);
+				fprintf(stream, "\n");
+			} // Print horizontal block border.
+			fprintf(stream, "%2hx", row); // Row coordinate ruler.
+		}
+		for (col = 0; col < BOARD_W; col++) {
+			if (mode == print_user && !(col % BLOCK_W))
+				fprintf(stream, BORDER); // Vertical block border.
+			if (mode == print_answer)
+				fprintf(stream, "%2hx", board[row][col].answer);
+			else if (board[row][col].puzzle == default_cell.puzzle) {
+				fprintf(stream, "  ");
+			} // Print spaces for default entry.
+			else
+				fprintf(stream, "%2hx", board[row][col].puzzle);
+		} // Print the current row of the board.
+		if (mode == print_user)
+			fprintf(stream, BORDER); // Last part of vertical block border.
+		fprintf(stream, "\n");
+	}
+	if (mode == print_user) {
+		fprintf(stream, "  ");
+		for (col = 0; col <= BOARD_W + BLOCK_W; col++)
+			fprintf(stream, BORDER);
+		fprintf(stream, "\n");
+	} // Print last horizontal block border.
+}
+
+//========================================
+// SOLVING FUNCTIONS.
+//========================================
+
+// Return: TRUE if no candidates remain starting from the current entry of board at loc.
+bool toNextCand(cell board[][BOARD_W], const coord *loc) {
+	short *entry = &board[loc->row][loc->col].puzzle;
+
+	if (*entry == default_cell.puzzle)
+		*entry = 0;
+	for (; *entry < BOARD_W; (*entry)++) {
+		if (isPossCand(board, loc, *entry)) {
+			return FALSE;
+		}
+	}
+	*entry = default_cell.puzzle;
+	return TRUE;
+}
+
+// Return: TRUE if testNo is a valid candidate in the cell of board[][] at loc.
+bool isPossCand(cell board[][BOARD_W], const coord *loc, short testNo) {
+#define BLOCK_COORD(x) (x - x % BLOCK_W)
+	const short b_row = BLOCK_COORD(loc->row), b_col = BLOCK_COORD(loc->col);
+	short row = 0, col = 0;
+
+	for (row = 0; row < BLOCK_W; row++) {
+		for (col = 0; col < BLOCK_W; col++) {
+			if (board[b_row + row][b_col + col].puzzle == testNo && \
+				(b_row + row != loc->row && b_col + col != loc->col)) {
+				return FALSE;
+			}
+		}
+	}
+	for (row = 0; row < BOARD_W; row++) {
+		if ((board[row][loc->col].puzzle == testNo && row != loc->row) || \
+			(board[loc->row][row].puzzle == testNo && row != loc->col)) {
+			return FALSE;
+		} // Candidate fails if it alreay exists in same row or column as loc (excluding loc itself).
+	}
+	return TRUE;
+}
+
+// Return: TRUE if reached first non-given cell.
+bool toPrevCell(cell board[][BOARD_W], coord *loc) {
+	do {
+		if (--loc->col == -1) {
+			loc->col += BOARD_W;
+			loc->row--;
+		}
+		if (loc->row == 0 && loc->col == 0) {
+			toNextCell(board, loc);
+			return TRUE;
+		} // Reached the start of the board.
+	} while (PTR_LOC_CELL.given_f == TRUE);
+	return FALSE;
+}
+
+// Return: TRUE if reached last non-given cell.
+bool toNextCell(cell board[][BOARD_W], coord *loc) {
+	do {
+		if (++loc->col == BOARD_W) {
+			loc->col = 0;
+			loc->row++;
+		}
+		if (loc->row == (BOARD_W - 1) && loc->col == (BOARD_W - 1)) {
+			toPrevCell(board, loc);
+			return TRUE;
+		} // Reached the end of the board.
+	} while (PTR_LOC_CELL.given_f == TRUE);
+	return FALSE;
+}
+
+// Return: TRUE if a solution was found.
+bool solveBoard(cell board[][BOARD_W], bool continuedSolve) {
+	static coord loc = { 0, 0 };
+
+	if (continuedSolve) {
+		board[loc.row][loc.col].puzzle++;
+	} // Always done EXCEPT on first solution of new game.
+	else {
+		loc = { 0, 0 };
+	} // Always done on first solution of new game.
+	if (board[loc.row][loc.col].given_f == TRUE) {
+		toNextCell(board, &loc);
+	} // Start solving at the first non-given cell from previous loc.
+
+	do {
+		if (toNextCand(board, &loc)) {
+			if (toPrevCell(board, &loc)) {
+				return FALSE;
+			} // Couldn't find a solution. Stop and remember coordinate.
+			board[loc.row][loc.col].puzzle++;
+		} // If no candidates remain starting from current entry...
+		else {
+			if (toNextCell(board, &loc)) {
+				return TRUE;
+			} // Found a solution. Stop.
+		}
+#ifdef DEBON
+		if (_kbhit()) {
+			_getch();
+			printBoard(board, print_debug, stdout);
+		}
+#endif
+	} while (TRUE);
+}
+
+//========================================
+// SCORING FUNCTIONS.
+//========================================
+
+// Return: linear 'group coordinate' of target entry in specified group, or -1 if target not found.
+short searchGroup(cell board[][BOARD_W], short target, short gLoc, search_mode mode) {
+	short foundLoc = 0;
+
+	switch (mode) {
+	case search_row:
+		for (foundLoc = 0; foundLoc < BOARD_W; foundLoc++) {
+			if (board[gLoc][foundLoc].puzzle == target)
+				return foundLoc;
+		}
+		break;
+	case search_col:
+		for (foundLoc = 0; foundLoc < BOARD_W; foundLoc++) {
+			if (board[foundLoc][gLoc].puzzle == target)
+				return foundLoc;
+		}
+		break;
+	case search_block:
+		for (foundLoc = 0; foundLoc < BOARD_W; foundLoc++) {
+			if (board[foundLoc / BLOCK_W][foundLoc % BLOCK_W].puzzle == target)
+				return foundLoc;
+		}
+		break;
+	}
+	
+	return -1;
+}
+
+//
